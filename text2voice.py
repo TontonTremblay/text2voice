@@ -2,25 +2,52 @@ import os
 import openai
 import tempfile
 import pygame
+import readline
+import atexit
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Set up OpenAI API key
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Set up OpenAI client
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def correct_text(text, language):
-    """Use GPT-3.5 to correct typos in the input text."""
-    if language.lower() == "english":
-        prompt = f"Please correct any typos or grammatical errors in this English text, but preserve the meaning: '{text}'"
-    else:  # French
-        prompt = f"Veuillez corriger les fautes de frappe ou les erreurs grammaticales dans ce texte français, mais préservez le sens: '{text}'"
+# Set up command history - this file persists between sessions
+HISTORY_FILE = os.path.expanduser("~/.text2voice_history")
+
+def setup_history():
+    """Set up command history for arrow key navigation with persistent storage."""
+    # Create history file if it doesn't exist
+    if not os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, 'w'):
+            pass
     
-    response = openai.ChatCompletion.create(
+    # Read existing history from disk
+    try:
+        readline.read_history_file(HISTORY_FILE)
+        print(f"Loaded command history from {HISTORY_FILE}")
+    except FileNotFoundError:
+        print("No previous command history found. Creating new history file.")
+    
+    # Set history length
+    readline.set_history_length(100)
+    
+    # Save history on exit (as a backup)
+    atexit.register(readline.write_history_file, HISTORY_FILE)
+
+def save_history():
+    """Save command history to disk immediately."""
+    readline.write_history_file(HISTORY_FILE)
+
+def correct_text(text):
+    """Use GPT-3.5 to correct typos in the input text without translating."""
+    # Explicitly instruct not to translate
+    prompt = f"Fix ONLY typos and grammatical errors in this text. DO NOT translate it to another language. Keep the exact same language as the input: '{text}'"
+    
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "You are a helpful assistant that corrects text while preserving its meaning."},
+            {"role": "system", "content": "You are a proofreader that ONLY fixes spelling and grammar mistakes. You NEVER translate between languages. If the input is in French, your output MUST be in French. If the input is in English, your output MUST be in English. Your only job is to fix typos and grammatical errors while keeping the exact same language as the input."},
             {"role": "user", "content": prompt}
         ]
     )
@@ -29,7 +56,7 @@ def correct_text(text, language):
 
 def text_to_speech(text):
     """Convert text to speech using OpenAI's TTS API with a male voice."""
-    response = openai.audio.speech.create(
+    response = client.audio.speech.create(
         model="tts-1",
         voice="echo",  # Male voice
         input=text
@@ -56,13 +83,21 @@ def play_audio(file_path):
     os.unlink(file_path)  # Delete the temporary file
 
 def main():
+    # Set up command history
+    setup_history()
+    
     print("Welcome to Text2Voice!")
     print("Type your text in English or French, and I'll correct it and read it back to you.")
+    print("Use up/down arrow keys to navigate through your command history.")
+    print(f"Your command history is saved to {HISTORY_FILE} and persists between sessions.")
     print("Type 'exit' to quit.")
     
     while True:
-        # Get user input
+        # Get user input (readline will handle arrow key navigation)
         text = input("\nEnter your text: ")
+        
+        # Save history immediately after each command
+        save_history()
         
         if text.lower() == "exit":
             print("Goodbye!")
@@ -72,16 +107,10 @@ def main():
             print("Please enter some text.")
             continue
         
-        # Detect language (simple detection based on common French words)
-        french_words = ["je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "le", "la", "les", "un", "une", "des", "et", "ou", "mais", "donc", "car", "pour", "avec", "sans", "dans", "sur", "sous"]
-        french_word_count = sum(1 for word in text.lower().split() if word in french_words)
-        language = "french" if french_word_count / max(1, len(text.split())) > 0.2 else "english"
-        
-        print(f"Detected language: {language.capitalize()}")
         print("Correcting text...")
         
         # Correct the text
-        corrected_text = correct_text(text, language)
+        corrected_text = correct_text(text)
         print(f"Corrected text: {corrected_text}")
         
         print("Converting to speech...")
